@@ -37,16 +37,53 @@ struct DynamicCamera {
                 const sf::Vector2f& trackedPosWorld,      // world coords of player to track
                 const sf::Vector2f& trackedVelocityWorld  // world velocity of player to track
     ) {
-        // TODO: (HINTS/outline)
-        // collect statistics on the player position and velocity in (normalized, if you like)
-        // window coordinates. Compute lookAhead distance in world coords, adjusting for
-        // if the player is moving left or right.
-        // Now update lookAhead state using an EMA over its previous state and the lookAhead world
-        // vector. Then determine if the player is in the dead zone, soft rejection zone, or hard
-        // rejection zone. For each, perform EMA on the delta of the camera displacement (ignoring
-        // lookahead) appropriately. Next,
-        // set the camera center by offsetting the cameraUnadjustedCenter, combining lookAhead.
-        // Finally update cameraUnadjustedCenter, but without lookahead.
+        // 1. Measure the player relative to the UNADJUSTED camera (no lookahead),
+        //    so the zones behave exactly like the prep.
+        camera.setCameraCenter(cameraUnadjustedCenter);
+        float x = camera.worldToWindowPercent(trackedPosWorld).x;  // player x in [0,1] of window
+        float vx = trackedVelocityWorld.x;
+
+        // 2. Target lookahead in WORLD units: +lookAhead% of width if moving right,
+        //    -lookAhead% if moving left, 0 if stopped.
+        float lookAheadWorld = camera.windowPercentToWorldDist({lookAhead, 0.f}).x;
+        float targetLookahead = 0.f;
+        if (vx > 0) {
+            targetLookahead = lookAheadWorld;
+        } else if (vx < 0) {
+            targetLookahead = -lookAheadWorld;
+        }
+
+        // 3. EMA so the lookahead slides in/out smoothly instead of snapping.
+        lookaheadState = alpha * targetLookahead + (1.f - alpha) * lookaheadState;
+
+        // 4. Dead / soft / hard zone -> how far to move the unadjusted camera (window percent).
+        float deltaPercent = 0.f;
+        if (deadZoneX.contains(x)) {
+            // dead zone: camera doesn't move
+            deltaPercent = 0.f;
+        } else {
+            // signed distance past the dead-zone edge (+ = right of it, - = left of it)
+            float overDead = (x > deadZoneX.max) ? x - deadZoneX.max : x - deadZoneX.min;
+
+            if (softZoneX.contains(x)) {
+                // soft zone: ease toward putting the player back on the dead-zone edge
+                deltaPercent = alpha * overDead;
+            } else {
+                // hard zone: immediately push back to the hard line (player may never pass it),
+                // then ease the remaining soft-zone width like above
+                float hardEdge = (x > softZoneX.max) ? softZoneX.max : softZoneX.min;
+                float deadEdge = (x > deadZoneX.max) ? deadZoneX.max : deadZoneX.min;
+                deltaPercent = (x - hardEdge) + alpha * (hardEdge - deadEdge);
+            }
+        }
+        float deltaWorld = camera.windowPercentToWorldDist({deltaPercent, 0.f}).x;
+
+        // 5. Displayed camera = unadjusted (moved) + smoothed lookahead.
+        sf::Vector2f newUnadjusted = cameraUnadjustedCenter + sf::Vector2f{deltaWorld, 0.f};
+        camera.setCameraCenter(newUnadjusted + sf::Vector2f{lookaheadState, 0.f});
+
+        // 6. Remember the center WITHOUT lookahead for next frame.
+        cameraUnadjustedCenter = newUnadjusted;
     }
 
     float alpha;  // alpha to use for damping of camera position, *as well as* for smoothing of
